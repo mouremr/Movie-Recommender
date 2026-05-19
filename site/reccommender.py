@@ -9,55 +9,69 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import ThreadPoolExecutor
+import pickle
+
+load_dotenv()
+
+CACHE_FILE = "data/popular_cache.pkl"
+CACHE_TTL = 86400
+
+
+def init_movie_db():
+    tmdb.API_KEY = os.getenv("TMDB_API_KEY")
+    tmdb.REQUESTS_TIMEOUT = 5
 
 
 
 def run_recommender(watched_df):
-
-    tmdb.API_KEY = os.getenv("TMDB_API_KEY")
-    tmdb.REQUESTS_TIMEOUT = 5 
-
+    init_movie_db()
 
 
     watched_df = watched_df.rename(columns={"Name": "entry_title", "Rating": "entry_rating"})
-    watched_df["entry_published"] = pd.to_datetime(watched_df["Date"]).dt.strftime("%a, %-d %b %Y %H:%M:%S +0000")
+    # watched_df["entry_published"] = pd.to_datetime(watched_df["Date"]).dt.strftime("%a, %-d %b %Y %H:%M:%S +0000")
     
 
 
     movie_ids, tv_ids = [], []
     
-    for _, row in watched_df.iterrows():
-        title = row["entry_title"]
-        # Extract year from the Letterboxd "Year" column if present
-        year = row.get("Year")
-        year = int(year) if pd.notna(year) and str(year).isdigit() else None
-    
-        m_id, t_id = search_tmdb(title, year)
-        movie_ids.append(m_id)
-        tv_ids.append(t_id)
-    
-        time.sleep(0.25)   # stay well within TMDB rate limits (40 req/10 s)
-    
+    rows = [row for _, row in watched_df.iterrows()]
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        id_results = list(executor.map(search_tmdb, rows))
+
+    movie_ids, tv_ids = zip(*id_results)
     watched_df["movie_id"] = movie_ids
-    watched_df["tv_id"]    = tv_ids
+    watched_df["tv_id"] = tv_ids
+    watched_df["movie_id"] = pd.to_numeric(watched_df["movie_id"])
+    watched_df["tv_id"] = pd.to_numeric(watched_df["tv_id"])
+
+    movie_df = watched_df.dropna(subset=["movie_id"]).copy()
+    tv_df = watched_df.dropna(subset = ["movie_id"]).copy()
 
 
 
-
-    movie_df = watched_df.dropna(subset = ["movie_id"])
     movie_df['tv_id'] = pd.to_numeric(movie_df['tv_id'])
     movie_df['movie_id'] = pd.to_numeric(movie_df['movie_id'])
-
-
-
     movie_df['genres'] = None  # resets the column to object dtype
 
-    for movieId in movie_df['movie_id']:
-        movie = tmdb.Movies(int(movieId))
-        response = movie.info()
-        idx = movie_df[movie_df['movie_id'] == movieId].index[0]
-        movie_df.at[idx, 'genres'] = ', '.join([g['name'] for g in movie.genres])
-        time.sleep(0.1)
+
+
+
+    with ThreadPoolExecutor(max_workers=15) as executor:
+        genre_results = list(executor.map(fetch_genres, movie_df["movie_id"]))
+    movie_df["genres"] = genre_results
+
+    # for movieId in movie_df['movie_id']:
+    #     movie = tmdb.Movies(int(movieId))
+    #     response = movie.info()
+    #     idx = movie_df[movie_df['movie_id'] == movieId].index[0]
+    #     movie_df.at[idx, 'overview'] = response['overview']
+    #     time.sleep(0.2)
+    movie_df.rename(columns={"movie_id" : "id"}, inplace = True)
+    # return(movie_df)
+    movie_df = get_crew(movie_df)
+    # return movie_df
+
+
 
 
 
@@ -67,65 +81,51 @@ def run_recommender(watched_df):
     tv_df['tv_id'] = pd.to_numeric(tv_df['tv_id'])
 
     tv_df['genres'] = None  # resets the column to object dtype
+    # for tvId in tv_df['tv_id']:
+    #     tv = tmdb.TV(int(tvId))
+    #     response = tv.info()
+    #     idx = tv_df[tv_df['tv_id'] == tvId].index[0]
+    #     tv_df.at[idx, 'genres'] = ', '.join([g['name'] for g in tv.genres])
+    #     time.sleep(0.1)
 
 
 
-    movie = tmdb.Movies()
-    movies = []
-    page = 1
-    seen_ids = set(watched_df['movie_id'].dropna().astype(int).tolist())
-
-    while len(movies) < 1000:
-        response = movie.top_rated(page=page)
-        for item in response['results']:
-            if item['id'] not in seen_ids:
-                movies.append(item)
-        page += 1
-        time.sleep(.1)
-
-    print(response["results"][0]["title"])
-
-    len(movies)
-
-    popular_df = pd.DataFrame(movies)
+    popular_df = get_top_movies(watched_df)
+    # return popular_df
     popular_df = get_crew(popular_df)
 
 
 
 
-    for tvId in tv_df['tv_id']:
-        tv = tmdb.TV(int(tvId))
-        response = tv.info()
-        idx = tv_df[tv_df['tv_id'] == tvId].index[0]
-        tv_df.at[idx, 'genres'] = ', '.join([g['name'] for g in tv.genres])
-        time.sleep(0.1)
+
+
+
+
+
     
-    tfidf = TfidfVectorizer(stop_words='english')
+    # tfidf = TfidfVectorizer(stop_words='english')
     popular_df['overview'] = popular_df['overview'].fillna('')
 
 
-    get_crew(popular_df)
+    # get_crew(popular_df)
     
     
     
 
     features = ['actors', 'keywords', 'director', 'genres', "original_title"]
 
-    genres = tmdb.Genres()
-    response = genres.movie_list()
+    genres = genre_mapping()
 
-    merged = {d['id']: d['name'] for d in response['genres']}
-
-    popular_df['genres'] = popular_df['genre_ids'].apply(lambda ids: [merged[i] for i in ids if i in merged])
+    popular_df['genres'] = popular_df['genre_ids'].apply(lambda ids: [genres[i] for i in ids if i in genres])
 
     for feature in features:
         popular_df[feature] = popular_df[feature].apply(clean_data)
     
     popular_df['soup'] = popular_df.apply(create_soup, axis=1)
 
-    idx = popular_df[popular_df['id'] == 497].index[0]
-    idx
-    popular_df.loc[idx, 'soup']
+    # idx = popular_df[popular_df['id'] == 497].index[0]
+    # idx
+    # popular_df.loc[idx, 'soup']
 
 
     count = CountVectorizer(stop_words='english')
@@ -137,19 +137,8 @@ def run_recommender(watched_df):
     
     watched_pairs = list(zip(watched_df['entry_title'], watched_df['entry_rating']))
 
-    for movieId in movie_df['movie_id']:
-        movie = tmdb.Movies(int(movieId))
-        response = movie.info()
-        idx = movie_df[movie_df['movie_id'] == movieId].index[0]
-        movie_df.at[idx, 'overview'] = response['overview']
-        time.sleep(0.2)
-    
-    with ThreadPoolExecutor(max_workers=15) as executor:
-        results = list(executor.map(get_credits, movie_df['movie_id']))
 
-    movie_df["director"], movie_df["actors"], movie_df["keywords"] = zip(*results)
     features = ['actors', 'keywords', 'director', 'genres', 'entry_title']
-
     for feature in features:
         movie_df[feature] = movie_df[feature].apply(clean_data)
     
@@ -168,11 +157,11 @@ def run_recommender(watched_df):
 
     scores = cosine_similarity([taste_profile], popular_matrix)[0]
 
-    watched_ids = set(movie_df['movie_id'].dropna().astype(int))
+    watched_ids = set(movie_df['id'].dropna().astype(int))
     results = []
     for idx, score in sorted(enumerate(scores), key=lambda x: x[1], reverse=True):
-        if popular_df.iloc[idx]['id'] not in watched_ids:
-            results.append(popular_df.iloc[idx]['title'])
+        # if popular_df.iloc[idx]['id'] not in watched_ids:
+        results.append(popular_df.iloc[idx]['title'])
         if len(results) == 10:
             break
 
@@ -182,33 +171,40 @@ def run_recommender(watched_df):
 
 
 
-def search_tmdb(title, year=None):
-    """
-    Try a movie search first, then fall back to TV.
-    Returns (movie_id, tv_id) — one will always be NaN.
-    """
+def search_tmdb(row):
     search = tmdb.Search()
- 
-    # Movie search
+    title = row["entry_title"]
+    
+    try:
+        year = int(row.get("Year"))
+    except (ValueError, TypeError):
+        year = None
+
     kwargs = {"query": title}
     if year:
         kwargs["year"] = year
-    search.movie(**kwargs)
-    if search.results:
-        return float(search.results[0]["id"]), float("nan")
- 
-    # TV search (no year filter — TMDB TV search ignores it anyway)
-    search.tv(query=title)
-    if search.results:
-        return float("nan"), float(search.results[0]["id"])
- 
+
+    for attempt in range(3):  # retry up to 3 times
+        try:
+            search.movie(**kwargs)
+            time.sleep(0.25)
+            if search.results:
+                return float(search.results[0]["id"]), float("nan")
+
+            search.tv(query=title)
+            if search.results:
+                return float("nan"), float(search.results[0]["id"])
+
+            return float("nan"), float("nan")
+
+        except Exception as e:
+            print(f"Attempt {attempt + 1} failed for '{title}': {e}")
+            time.sleep(1 * (attempt + 1))  # back off: 1s, 2s, 3s
+
+    print(f"All retries failed for '{title}', skipping.")
     return float("nan"), float("nan")
 
 def get_crew(df):
-    from concurrent.futures import ThreadPoolExecutor
-    import threading
-
-    from concurrent.futures import ThreadPoolExecutor
 
     def get_credits(movie_id):
         try:
@@ -225,11 +221,12 @@ def get_crew(df):
             
             return director, actors, keywords
         except Exception as e:
-            return "Error", []
+            print(f"Credits failed for {movie_id}: {e}")
+            return "", [], []
 
     with ThreadPoolExecutor(max_workers=15) as executor:
         results = list(executor.map(get_credits, df["id"]))
-
+    # return pd.DataFrame(results)
     df["director"], df["actors"], df["keywords"] = zip(*results)
     return df
 
@@ -275,27 +272,64 @@ def get_recommendations_weighted(df, watched_titles_with_ratings, cosine_sim, in
 
     return df['title'].iloc[[i for i, _ in sim_scores]]
 
-def get_credits(movie_id):
+
+
+
+
+
+
+
+
+
+
+
+def return_data(data):
+    return data
+
+
+def genre_mapping():
+    genres = tmdb.Genres()
+    response = genres.movie_list()
+
+    return {d['id']: d['name'] for d in response['genres']}
+
+
+def get_top_movies(watched_df):
+    seen_ids = set(watched_df['movie_id'].dropna().astype(int).tolist())
+    os.makedirs("data", exist_ok=True)
+    if os.path.exists(CACHE_FILE):
+        age = time.time() - os.path.getmtime(CACHE_FILE)
+        if age < CACHE_TTL:
+            with open(CACHE_FILE, "rb") as f:
+                print("Using cached popular movies.")
+                return pickle.load(f)
+
+    print("Fetching fresh popular movies from TMDB...")
+    movie = tmdb.Movies()
+    movies, page = [], 1
+    while len(movies) < 1000:
+        response = movie.top_rated(page=page)
+        for item in response['results']:
+            if item['id'] not in seen_ids:
+                movies.append(item)
+        page += 1
+        time.sleep(0.05)
+
+    df = pd.DataFrame(movies)
+    with open(CACHE_FILE, "wb") as f:
+        pickle.dump(df, f)
+    return df
+
+
+
+def fetch_genres(movie_id):
     try:
-        movie = tmdb.Movies(movie_id)
-        credits = movie.credits()
-        
-        director = next(
-            (member["name"] for member in credits["crew"] if member["job"] == "Director"),
-            "Director not found"
-        )
-        actors = [member["name"] for member in credits["cast"][:5]]
-        keyworddict = movie.keywords()
-        keywords = [kw["name"] for kw in keyworddict["keywords"][:3]]
-        
-        return director, actors, keywords
-    except Exception as e:
-        return "Error", []
-
-
-
-
-
+        movie = tmdb.Movies(int(movie_id))
+        info = movie.info()
+        return ", ".join([g["name"] for g in movie.genres])
+    except:
+        return ""
+    
 
 
 
@@ -332,15 +366,9 @@ def process_username(data):
 
     df['movie_id'] = pd.to_numeric(df['movie_id'])
     df['tv_id'] = pd.to_numeric(df['tv_id']) 
-
-
     return df
 
 
 def process_file(filepath):
     df = pd.read_csv(filepath)
     return df
-
-
-def return_data(data):
-    return data
