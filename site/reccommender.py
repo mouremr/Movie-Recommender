@@ -10,6 +10,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import ThreadPoolExecutor
 import pickle
+import threading
 
 load_dotenv()
 
@@ -45,7 +46,7 @@ def run_recommender(watched_df):
     watched_df["tv_id"] = pd.to_numeric(watched_df["tv_id"])
 
     movie_df = watched_df.dropna(subset=["movie_id"]).copy()
-    tv_df = watched_df.dropna(subset = ["movie_id"]).copy()
+    tv_df = watched_df.dropna(subset = ["tv_id"]).copy()
 
 
 
@@ -90,7 +91,7 @@ def run_recommender(watched_df):
 
 
 
-    popular_df = get_top_movies(watched_df)
+    popular_df = get_top_movies_with_crew(watched_df)
     # return popular_df
     popular_df = get_crew(popular_df)
 
@@ -128,9 +129,9 @@ def run_recommender(watched_df):
     # popular_df.loc[idx, 'soup']
 
 
-    count = CountVectorizer(stop_words='english')
-    count_matrix = count.fit_transform(popular_df['soup'])
-    cosine_sim = cosine_similarity(count_matrix, count_matrix)
+    # count = CountVectorizer(stop_words='english')
+    # count_matrix = count.fit_transform(popular_df['soup'])
+    # cosine_sim = cosine_similarity(count_matrix, count_matrix)
 
     popular_df = popular_df.reset_index()
     indices = pd.Series(popular_df.index, index=popular_df['title'])
@@ -295,8 +296,10 @@ def genre_mapping():
 
 
 def get_top_movies(watched_df):
+    _tmdb_semaphore = threading.Semaphore(5)
     seen_ids = set(watched_df['movie_id'].dropna().astype(int).tolist())
     os.makedirs("data", exist_ok=True)
+
     if os.path.exists(CACHE_FILE):
         age = time.time() - os.path.getmtime(CACHE_FILE)
         if age < CACHE_TTL:
@@ -305,15 +308,26 @@ def get_top_movies(watched_df):
                 return pickle.load(f)
 
     print("Fetching fresh popular movies from TMDB...")
-    movie = tmdb.Movies()
-    movies, page = [], 1
-    while len(movies) < 1000:
-        response = movie.top_rated(page=page)
-        for item in response['results']:
-            if item['id'] not in seen_ids:
-                movies.append(item)
-        page += 1
-        time.sleep(0.05)
+
+    # TMDB returns 20 results per page, so 50 pages = 1000 movies
+    pages = range(1, 51)
+
+    def fetch_page(page):
+        with _tmdb_semaphore:
+            try:
+                movie = tmdb.Movies()
+                response = movie.top_rated(page=page)
+                time.sleep(0.1)
+                return [item for item in response['results'] if item['id'] not in seen_ids]
+            except Exception as e:
+                print(f"Failed to fetch page {page}: {e}")
+                return []
+
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        page_results = list(executor.map(fetch_page, pages))
+
+    # flatten results, preserving page order
+    movies = [item for page in page_results for item in page]
 
     df = pd.DataFrame(movies)
     with open(CACHE_FILE, "wb") as f:
@@ -371,4 +385,21 @@ def process_username(data):
 
 def process_file(filepath):
     df = pd.read_csv(filepath)
+    return df
+
+
+CREW_CACHE_FILE = "data/popular_crew_cache.pkl"
+
+def get_top_movies_with_crew(watched_df):
+    if os.path.exists(CREW_CACHE_FILE):
+        age = time.time() - os.path.getmtime(CREW_CACHE_FILE)
+        if age < CACHE_TTL:
+            with open(CREW_CACHE_FILE, "rb") as f:
+                return pickle.load(f)
+    
+    df = get_top_movies(watched_df)
+    df = get_crew(df)  # expensive — only run when cache is cold
+    
+    with open(CREW_CACHE_FILE, "wb") as f:
+        pickle.dump(df, f)
     return df
