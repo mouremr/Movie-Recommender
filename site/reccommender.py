@@ -28,9 +28,7 @@ def run_recommender(watched_df):
     init_movie_db()
 
 
-    watched_df = watched_df.rename(columns={"Name": "entry_title", "Rating": "entry_rating"})
-    # watched_df["entry_published"] = pd.to_datetime(watched_df["Date"]).dt.strftime("%a, %-d %b %Y %H:%M:%S +0000")
-    
+    watched_df = watched_df.rename(columns={"Name": "entry_title", "Rating": "entry_rating"})    
 
 
     movie_ids, tv_ids = [], []
@@ -69,7 +67,7 @@ def run_recommender(watched_df):
     #     time.sleep(0.2)
     movie_df.rename(columns={"movie_id" : "id"}, inplace = True)
     # return(movie_df)
-    movie_df = get_crew(movie_df)
+    movie_df = get_crew(movie_df, "watched movies")
     # return movie_df
 
 
@@ -93,7 +91,7 @@ def run_recommender(watched_df):
 
     popular_df = get_top_movies_with_crew(watched_df)
     # return popular_df
-    popular_df = get_crew(popular_df)
+    # popular_df = get_crew(popular_df)
 
 
 
@@ -124,19 +122,7 @@ def run_recommender(watched_df):
     
     popular_df['soup'] = popular_df.apply(create_soup, axis=1)
 
-    # idx = popular_df[popular_df['id'] == 497].index[0]
-    # idx
-    # popular_df.loc[idx, 'soup']
-
-
-    # count = CountVectorizer(stop_words='english')
-    # count_matrix = count.fit_transform(popular_df['soup'])
-    # cosine_sim = cosine_similarity(count_matrix, count_matrix)
-
     popular_df = popular_df.reset_index()
-    indices = pd.Series(popular_df.index, index=popular_df['title'])
-    
-    watched_pairs = list(zip(watched_df['entry_title'], watched_df['entry_rating']))
 
 
     features = ['actors', 'keywords', 'director', 'genres', 'entry_title']
@@ -150,7 +136,7 @@ def run_recommender(watched_df):
     count_matrix = count.fit_transform(all_soup)
 
     n_popular = len(popular_df)
-    popular_matrix = count_matrix[:n_popular]   # candidate pool
+    popular_matrix = count_matrix[:n_popular]   # popular movies
     watched_matrix = count_matrix[n_popular:]   # your watched movies
     ratings = movie_df['entry_rating']
     weights = ratings / ratings.sum()
@@ -158,10 +144,9 @@ def run_recommender(watched_df):
 
     scores = cosine_similarity([taste_profile], popular_matrix)[0]
 
-    watched_ids = set(movie_df['id'].dropna().astype(int))
+    # watched_ids = set(movie_df['id'].dropna().astype(int))
     results = []
     for idx, score in sorted(enumerate(scores), key=lambda x: x[1], reverse=True):
-        # if popular_df.iloc[idx]['id'] not in watched_ids:
         results.append(popular_df.iloc[idx]['title'])
         if len(results) == 10:
             break
@@ -175,6 +160,7 @@ def run_recommender(watched_df):
 def search_tmdb(row):
     search = tmdb.Search()
     title = row["entry_title"]
+    print("searching for: " + title)
     
     try:
         year = int(row.get("Year"))
@@ -185,7 +171,7 @@ def search_tmdb(row):
     if year:
         kwargs["year"] = year
 
-    for attempt in range(3):  # retry up to 3 times
+    for attempt in range(3):
         try:
             search.movie(**kwargs)
             time.sleep(0.25)
@@ -205,8 +191,8 @@ def search_tmdb(row):
     print(f"All retries failed for '{title}', skipping.")
     return float("nan"), float("nan")
 
-def get_crew(df):
-
+def get_crew(df, name):
+    print("Getting credits for " + name)
     def get_credits(movie_id):
         try:
             movie = tmdb.Movies(movie_id)
@@ -223,7 +209,7 @@ def get_crew(df):
             return director, actors, keywords
         except Exception as e:
             print(f"Credits failed for {movie_id}: {e}")
-            return "", [], []
+            return "", "", ""
 
     with ThreadPoolExecutor(max_workers=15) as executor:
         results = list(executor.map(get_credits, df["id"]))
@@ -391,6 +377,7 @@ def process_file(filepath):
 CREW_CACHE_FILE = "data/popular_crew_cache.pkl"
 
 def get_top_movies_with_crew(watched_df):
+    print()
     if os.path.exists(CREW_CACHE_FILE):
         age = time.time() - os.path.getmtime(CREW_CACHE_FILE)
         if age < CACHE_TTL:
@@ -398,7 +385,7 @@ def get_top_movies_with_crew(watched_df):
                 return pickle.load(f)
     
     df = get_top_movies(watched_df)
-    df = get_crew(df)  # expensive — only run when cache is cold
+    df = get_crew(df, "top movies")  # expensive — only run when cache is cold
     
     with open(CREW_CACHE_FILE, "wb") as f:
         pickle.dump(df, f)
