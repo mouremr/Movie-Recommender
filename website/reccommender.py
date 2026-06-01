@@ -11,11 +11,15 @@ from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import ThreadPoolExecutor
 import pickle
 import threading
+from upstash_redis import Redis
+import json
 
 load_dotenv()
 
 CACHE_FILE = "data/popular_cache.pkl"
 CACHE_TTL = 86400
+
+r = Redis.from_env()
 
 
 def init_movie_db():
@@ -30,21 +34,21 @@ def run_recommender(watched_df):
 
 
     watched_df = watched_df.rename(columns={"Name": "entry_title", "Rating": "entry_rating"})    
-    watched_df = watched_df[['entry_title', 'entry_rating']]
+    watched_df = watched_df[['entry_title', 'entry_rating', 'movie_id', 'tv_id']]
     watched_df = watched_df.drop_duplicates(subset=['entry_title'])
     # return watched_df
 
-    movie_ids, tv_ids = [], []
+    # movie_ids, tv_ids = [], []
     
-    rows = [row for _, row in watched_df.iterrows()]
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        id_results = list(executor.map(search_tmdb, rows))
+    # rows = [row for _, row in watched_df.iterrows()]
+    # with ThreadPoolExecutor(max_workers=10) as executor:
+    #     id_results = list(executor.map(search_tmdb, rows))
 
-    movie_ids, tv_ids = zip(*id_results)
-    watched_df["movie_id"] = movie_ids
-    watched_df["tv_id"] = tv_ids
-    watched_df["movie_id"] = pd.to_numeric(watched_df["movie_id"])
-    watched_df["tv_id"] = pd.to_numeric(watched_df["tv_id"])
+    # movie_ids, tv_ids = zip(*id_results)
+    # watched_df["movie_id"] = movie_ids
+    # watched_df["tv_id"] = tv_ids
+    # watched_df["movie_id"] = pd.to_numeric(watched_df["movie_id"])
+    # watched_df["tv_id"] = pd.to_numeric(watched_df["tv_id"])
 
     movie_df = watched_df.dropna(subset=["movie_id"]).copy()
     tv_df = watched_df.dropna(subset = ["tv_id"]).copy()
@@ -173,23 +177,37 @@ def search_tmdb(row):
 def get_crew(df, name):
     print("Getting credits for " + name)
     def get_credits(movie_id):
+        cache_key = f"crew:{int(movie_id)}"
+        
+        # Check cache first
+        cached = r.get(cache_key)
+        if cached:
+            data = json.loads(cached)
+            return data["director"], data["actors"], data["keywords"]
+        
+        # Otherwise fetch from TMDB
         try:
             movie = tmdb.Movies(movie_id)
             credits = movie.credits()
-            
             director = next(
-                (member["name"] for member in credits["crew"] if member["job"] == "Director"),
-                "Director not found"
+                (m["name"] for m in credits["crew"] if m["job"] == "Director"),
+                ""
             )
-            actors = [member["name"] for member in credits["cast"][:5]]
+            actors = [m["name"] for m in credits["cast"][:5]]
             keyworddict = movie.keywords()
             keywords = [kw["name"] for kw in keyworddict["keywords"][:3]]
             
+            # Cache for 30 days (crew doesn't change)
+            r.setex(cache_key, 2592000, json.dumps({
+                "director": director,
+                "actors": actors,
+                "keywords": keywords
+            }))
             return director, actors, keywords
         except Exception as e:
             print(f"Credits failed for {movie_id}: {e}")
-            return "", "", ""
-
+            return "", [], []
+    
     with ThreadPoolExecutor(max_workers=15) as executor:
         results = list(executor.map(get_credits, df["id"]))
     # return pd.DataFrame(results)
