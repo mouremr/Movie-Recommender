@@ -25,11 +25,14 @@ def init_movie_db():
 
 
 def run_recommender(watched_df):
+    
     init_movie_db()
 
 
     watched_df = watched_df.rename(columns={"Name": "entry_title", "Rating": "entry_rating"})    
-
+    watched_df = watched_df[['entry_title', 'entry_rating']]
+    watched_df = watched_df.drop_duplicates(subset=['entry_title'])
+    # return watched_df
 
     movie_ids, tv_ids = [], []
     
@@ -50,7 +53,7 @@ def run_recommender(watched_df):
 
     movie_df['tv_id'] = pd.to_numeric(movie_df['tv_id'])
     movie_df['movie_id'] = pd.to_numeric(movie_df['movie_id'])
-    movie_df['genres'] = None  # resets the column to object dtype
+    movie_df['genres'] = None
 
 
 
@@ -58,17 +61,8 @@ def run_recommender(watched_df):
     with ThreadPoolExecutor(max_workers=15) as executor:
         genre_results = list(executor.map(fetch_genres, movie_df["movie_id"]))
     movie_df["genres"] = genre_results
-
-    # for movieId in movie_df['movie_id']:
-    #     movie = tmdb.Movies(int(movieId))
-    #     response = movie.info()
-    #     idx = movie_df[movie_df['movie_id'] == movieId].index[0]
-    #     movie_df.at[idx, 'overview'] = response['overview']
-    #     time.sleep(0.2)
     movie_df.rename(columns={"movie_id" : "id"}, inplace = True)
-    # return(movie_df)
     movie_df = get_crew(movie_df, "watched movies")
-    # return movie_df
 
 
 
@@ -80,18 +74,11 @@ def run_recommender(watched_df):
     tv_df['tv_id'] = pd.to_numeric(tv_df['tv_id'])
 
     tv_df['genres'] = None  # resets the column to object dtype
-    # for tvId in tv_df['tv_id']:
-    #     tv = tmdb.TV(int(tvId))
-    #     response = tv.info()
-    #     idx = tv_df[tv_df['tv_id'] == tvId].index[0]
-    #     tv_df.at[idx, 'genres'] = ', '.join([g['name'] for g in tv.genres])
-    #     time.sleep(0.1)
+
 
 
 
     popular_df = get_top_movies_with_crew(watched_df)
-    # return popular_df
-    # popular_df = get_crew(popular_df)
 
 
 
@@ -101,17 +88,16 @@ def run_recommender(watched_df):
 
 
 
-    
-    # tfidf = TfidfVectorizer(stop_words='english')
-    popular_df['overview'] = popular_df['overview'].fillna('')
 
 
-    # get_crew(popular_df)
+    # popular_df['overview'] = popular_df['overview'].fillna('')
+
+
     
     
     
 
-    features = ['actors', 'keywords', 'director', 'genres', "original_title"]
+    features = ['actors', 'keywords', 'director', 'genres', 'original_title']
 
     genres = genre_mapping()
 
@@ -161,15 +147,8 @@ def search_tmdb(row):
     search = tmdb.Search()
     title = row["entry_title"]
     print("searching for: " + title)
-    
-    try:
-        year = int(row.get("Year"))
-    except (ValueError, TypeError):
-        year = None
 
     kwargs = {"query": title}
-    if year:
-        kwargs["year"] = year
 
     for attempt in range(3):
         try:
@@ -270,9 +249,6 @@ def get_recommendations_weighted(df, watched_titles_with_ratings, cosine_sim, in
 
 
 
-def return_data(data):
-    return data
-
 
 def genre_mapping():
     genres = tmdb.Genres()
@@ -295,7 +271,7 @@ def get_top_movies(watched_df):
 
     print("Fetching fresh popular movies from TMDB...")
 
-    # TMDB returns 20 results per page, so 50 pages = 1000 movies
+    # TMDB returns 20 results per page so 50 pages = 1000 movies
     pages = range(1, 51)
 
     def fetch_page(page):
@@ -304,7 +280,7 @@ def get_top_movies(watched_df):
                 movie = tmdb.Movies()
                 response = movie.top_rated(page=page)
                 time.sleep(0.1)
-                return [item for item in response['results'] if item['id'] not in seen_ids]
+                return [item for item in response['results'] if item['id'] not in seen_ids] # filter out movies that have already been seen
             except Exception as e:
                 print(f"Failed to fetch page {page}: {e}")
                 return []
@@ -365,7 +341,8 @@ def process_username(data):
     df = pd.DataFrame.from_dict(movieDict, orient='columns')
 
     df['movie_id'] = pd.to_numeric(df['movie_id'])
-    df['tv_id'] = pd.to_numeric(df['tv_id']) 
+    df['tv_id'] = pd.to_numeric(df['tv_id'])
+    df['entry_rating'] = pd.to_numeric(df['entry_rating']) 
     return df
 
 
@@ -385,7 +362,7 @@ def get_top_movies_with_crew(watched_df):
                 return pickle.load(f)
     
     df = get_top_movies(watched_df)
-    df = get_crew(df, "top movies")  # expensive — only run when cache is cold
+    df = get_crew(df, "top movies")
     
     with open(CREW_CACHE_FILE, "wb") as f:
         pickle.dump(df, f)
