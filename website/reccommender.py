@@ -9,17 +9,17 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import ThreadPoolExecutor
-import pickle
 import threading
 from upstash_redis import Redis
 import json
+import io
 
 load_dotenv()
 
 CACHE_FILE = "data/popular_cache.pkl"
 CACHE_TTL = 86400
 
-r = Redis.from_env()
+redis = Redis.from_env()
 
 
 def init_movie_db():
@@ -134,7 +134,7 @@ def run_recommender(watched_df):
 
     scores = cosine_similarity([taste_profile], popular_matrix)[0]
 
-    # watched_ids = set(movie_df['id'].dropna().astype(int))
+
     results = []
     for idx, score in sorted(enumerate(scores), key=lambda x: x[1], reverse=True):
         results.append(popular_df.iloc[idx]['title'])
@@ -169,7 +169,7 @@ def search_tmdb(row):
 
         except Exception as e:
             print(f"Attempt {attempt + 1} failed for '{title}': {e}")
-            time.sleep(1 * (attempt + 1))  # back off: 1s, 2s, 3s
+            time.sleep(1 * (attempt + 1))  # back off 1s, 2s, 3s
 
     print(f"All retries failed for '{title}', skipping.")
     return float("nan"), float("nan")
@@ -179,13 +179,13 @@ def get_crew(df, name):
     def get_credits(movie_id):
         cache_key = f"crew:{int(movie_id)}"
         
-        # Check cache first
-        cached = r.get(cache_key)
+        # check cache first
+        cached = redis.get(cache_key)
         if cached:
             data = json.loads(cached)
             return data["director"], data["actors"], data["keywords"]
         
-        # Otherwise fetch from TMDB
+        # otherwise fetch movie data
         try:
             movie = tmdb.Movies(movie_id)
             credits = movie.credits()
@@ -197,8 +197,8 @@ def get_crew(df, name):
             keyworddict = movie.keywords()
             keywords = [kw["name"] for kw in keyworddict["keywords"][:3]]
             
-            # Cache for 30 days (crew doesn't change)
-            r.setex(cache_key, 2592000, json.dumps({
+            # store cache for 30 days
+            redis.setex(cache_key, 2592000, json.dumps({
                 "director": director,
                 "actors": actors,
                 "keywords": keywords
@@ -210,7 +210,6 @@ def get_crew(df, name):
     
     with ThreadPoolExecutor(max_workers=15) as executor:
         results = list(executor.map(get_credits, df["id"]))
-    # return pd.DataFrame(results)
     df["director"], df["actors"], df["keywords"] = zip(*results)
     return df
 
@@ -218,7 +217,7 @@ def clean_data(x):
     if isinstance(x, list):
         return [str.lower(i.replace(" ", "")) for i in x]
     else:
-        #Check if director exists. If not, return empty string
+        #check if director exists, if not, return empty string
         if isinstance(x, str):
             return str.lower(x.replace(" ", ""))
         else:
@@ -232,10 +231,6 @@ def create_soup(x):
     return f"{director} {genres} {actors} {keywords}"
 
 def get_recommendations_weighted(df, watched_titles_with_ratings, cosine_sim, indices, top_n=10):
-    """
-    watched_titles_with_ratings: list of (title, rating) tuples
-    e.g. [("The Avengers", 4.5), ("Parasite", 5.0)]
-    """
     
     valid = [(indices[t], r) for t, r in watched_titles_with_ratings if t in indices]
 
@@ -247,7 +242,7 @@ def get_recommendations_weighted(df, watched_titles_with_ratings, cosine_sim, in
 
     watched_idx = {idx for idx, _ in valid}
     
-    # Build a weighted sum of similarity rows
+    # build a weighted sum of similarity rows
     total_weight = sum(r for _, r in valid)
     weighted_scores = sum(cosine_sim[idx] * (r / total_weight) for idx, r in valid)
 
@@ -279,13 +274,10 @@ def get_top_movies(watched_df):
     _tmdb_semaphore = threading.Semaphore(5)
     seen_ids = set(watched_df['movie_id'].dropna().astype(int).tolist())
     os.makedirs("data", exist_ok=True)
-
-    if os.path.exists(CACHE_FILE):
-        age = time.time() - os.path.getmtime(CACHE_FILE)
-        if age < CACHE_TTL:
-            with open(CACHE_FILE, "rb") as f:
-                print("Using cached popular movies.")
-                return pickle.load(f)
+    
+    cached = redis.get("popular_movies")
+    if(cached):
+        return pd.read_json(io.StringIO(cached))
 
     print("Fetching fresh popular movies from TMDB...")
 
@@ -310,8 +302,7 @@ def get_top_movies(watched_df):
     movies = [item for page in page_results for item in page]
 
     df = pd.DataFrame(movies)
-    with open(CACHE_FILE, "wb") as f:
-        pickle.dump(df, f)
+    redis.setex("popular_movies", CACHE_TTL, df.to_json()) #store popular movies in cache before returning
     return df
 
 
@@ -372,16 +363,6 @@ def process_file(filepath):
 CREW_CACHE_FILE = "data/popular_crew_cache.pkl"
 
 def get_top_movies_with_crew(watched_df):
-    print()
-    if os.path.exists(CREW_CACHE_FILE):
-        age = time.time() - os.path.getmtime(CREW_CACHE_FILE)
-        if age < CACHE_TTL:
-            with open(CREW_CACHE_FILE, "rb") as f:
-                return pickle.load(f)
-    
     df = get_top_movies(watched_df)
     df = get_crew(df, "top movies")
-    
-    with open(CREW_CACHE_FILE, "wb") as f:
-        pickle.dump(df, f)
     return df
