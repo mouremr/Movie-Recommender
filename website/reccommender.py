@@ -32,23 +32,11 @@ def run_recommender(watched_df):
     
     init_movie_db()
 
-
+    #return watched_df
     watched_df = watched_df.rename(columns={"Name": "entry_title", "Rating": "entry_rating"})    
     watched_df = watched_df[['entry_title', 'entry_rating', 'movie_id', 'tv_id']]
     watched_df = watched_df.drop_duplicates(subset=['entry_title'])
-    # return watched_df
-
-    # movie_ids, tv_ids = [], []
     
-    # rows = [row for _, row in watched_df.iterrows()]
-    # with ThreadPoolExecutor(max_workers=10) as executor:
-    #     id_results = list(executor.map(search_tmdb, rows))
-
-    # movie_ids, tv_ids = zip(*id_results)
-    # watched_df["movie_id"] = movie_ids
-    # watched_df["tv_id"] = tv_ids
-    # watched_df["movie_id"] = pd.to_numeric(watched_df["movie_id"])
-    # watched_df["tv_id"] = pd.to_numeric(watched_df["tv_id"])
 
     movie_df = watched_df.dropna(subset=["movie_id"]).copy()
     tv_df = watched_df.dropna(subset = ["tv_id"]).copy()
@@ -82,7 +70,7 @@ def run_recommender(watched_df):
 
 
 
-    popular_df = get_top_movies_with_crew(watched_df)
+    popular_df = get_top_movies_with_crew()
 
 
 
@@ -134,10 +122,14 @@ def run_recommender(watched_df):
 
     scores = cosine_similarity([taste_profile], popular_matrix)[0]
 
-
+    watched_ids = set(movie_df['id'].dropna().astype(int))
     results = []
     for idx, score in sorted(enumerate(scores), key=lambda x: x[1], reverse=True):
-        results.append(popular_df.iloc[idx]['title'])
+        movie = popular_df.iloc[idx]
+        
+        # filter out movies that have already been seen
+        if int(movie['id']) not in watched_ids: 
+            results.append(movie['title'])
         if len(results) == 10:
             break
 
@@ -150,6 +142,14 @@ def run_recommender(watched_df):
 def search_tmdb(row):
     search = tmdb.Search()
     title = row["entry_title"]
+    cache_key = f"search:{title.lower().strip()}"
+    
+    # check cache first
+    cached = redis.get(cache_key)
+    if cached:
+        data = json.loads(cached)
+        return data["movie_id"], data["tv_id"]
+    
     print("searching for: " + title)
 
     kwargs = {"query": title}
@@ -159,11 +159,20 @@ def search_tmdb(row):
             search.movie(**kwargs)
             time.sleep(0.25)
             if search.results:
-                return float(search.results[0]["id"]), float("nan")
+                result = float(search.results[0]["id"]), float("nan")
+                redis.setex(cache_key, 2592000, json.dumps({
+                    "movie_id": result[0], "tv_id": float("nan")
+                }))
+                return result
+                
 
             search.tv(query=title)
             if search.results:
-                return float("nan"), float(search.results[0]["id"])
+                result = float("nan"), float(search.results[0]["id"])
+                redis.setex(cache_key, 2592000, json.dumps({
+                    "movie_id": float("nan"), "tv_id": result[1]
+                }))
+                return result
 
             return float("nan"), float("nan")
 
@@ -270,9 +279,8 @@ def genre_mapping():
     return {d['id']: d['name'] for d in response['genres']}
 
 
-def get_top_movies(watched_df):
+def get_top_movies():
     _tmdb_semaphore = threading.Semaphore(5)
-    seen_ids = set(watched_df['movie_id'].dropna().astype(int).tolist())
     os.makedirs("data", exist_ok=True)
     
     cached = redis.get("popular_movies")
@@ -290,7 +298,7 @@ def get_top_movies(watched_df):
                 movie = tmdb.Movies()
                 response = movie.top_rated(page=page)
                 time.sleep(0.1)
-                return [item for item in response['results'] if item['id'] not in seen_ids] # filter out movies that have already been seen
+                return [item for item in response['results']] 
             except Exception as e:
                 print(f"Failed to fetch page {page}: {e}")
                 return []
@@ -310,7 +318,6 @@ def get_top_movies(watched_df):
 def fetch_genres(movie_id):
     try:
         movie = tmdb.Movies(int(movie_id))
-        info = movie.info()
         return ", ".join([g["name"] for g in movie.genres])
     except:
         return ""
@@ -357,12 +364,21 @@ def process_username(data):
 
 def process_file(filepath):
     df = pd.read_csv(filepath)
+    df = df.rename(columns={"Name" : "entry_title"})
+    rows = [row for _, row in df.iterrows()]
+    print("searching for uploaded movies")
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        id_results = list(executor.map(search_tmdb, rows))
+    movie_ids, tv_ids = zip(*id_results)
+    df["movie_id"] = movie_ids
+    df["tv_id"] = tv_ids
+    df["movie_id"] = pd.to_numeric(df["movie_id"])
+    df["tv_id"] = pd.to_numeric(df["tv_id"])
     return df
 
 
-CREW_CACHE_FILE = "data/popular_crew_cache.pkl"
 
-def get_top_movies_with_crew(watched_df):
-    df = get_top_movies(watched_df)
+def get_top_movies_with_crew():
+    df = get_top_movies()
     df = get_crew(df, "top movies")
     return df
