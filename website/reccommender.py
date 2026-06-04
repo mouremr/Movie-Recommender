@@ -134,6 +134,7 @@ def run_recommender(watched_df):
             break
 
     results_df = pd.DataFrame(results, columns=['top movies'])
+    results_df = results_df.set_index('top movies')
     return results_df
 
 
