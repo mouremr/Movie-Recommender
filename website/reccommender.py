@@ -138,9 +138,9 @@ def run_recommender(watched_df):
     return results_df
 
 
-
-
 def search_tmdb(row):
+
+
     search = tmdb.Search()
     title = row["entry_title"]
     cache_key = f"search:{title.lower().strip()}"
@@ -327,59 +327,68 @@ def fetch_genres(movie_id):
 
 
 
-def process_username(data):
-    username = data
-    feed = feedparser.parse(f"https://letterboxd.com/{username}/rss/")
-    movieDict = {
-        "entry_title" : [],
-        "entry_published" : [],
-        "entry_rating" : [],
-        "movie_id": [],
-        "tv_id" : [],
-    }
-    feed.entries[0].tmdb_movieid
-    for entry in feed.entries:
-        
-        movieDict["entry_title"].append(entry.letterboxd_filmtitle)
-        movieDict["entry_published"].append(entry.published)
-        try:
-            movieDict["movie_id"].append(entry.tmdb_movieid)
-            movieDict["tv_id"].append(pd.NA)
-        except:
-            movieDict["movie_id"].append(pd.NA)
-            movieDict["tv_id"].append(entry.tmdb_tvid)
-        try:
-            movieDict["entry_rating"].append(entry.letterboxd_memberrating)
-
-        except:
-            movieDict["entry_rating"].append(0)
-
-
-    df = pd.DataFrame.from_dict(movieDict, orient='columns')
-
-    df['movie_id'] = pd.to_numeric(df['movie_id'])
-    df['tv_id'] = pd.to_numeric(df['tv_id'])
-    df['entry_rating'] = pd.to_numeric(df['entry_rating']) 
-    return df
-
-
-def process_file(filepath):
-    df = pd.read_csv(filepath)
-    df = df.rename(columns={"Name" : "entry_title"})
-    rows = [row for _, row in df.iterrows()]
-    print("searching for uploaded movies")
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        id_results = list(executor.map(search_tmdb, rows))
-    movie_ids, tv_ids = zip(*id_results)
-    df["movie_id"] = movie_ids
-    df["tv_id"] = tv_ids
-    df["movie_id"] = pd.to_numeric(df["movie_id"])
-    df["tv_id"] = pd.to_numeric(df["tv_id"])
-    return df
-
-
-
 def get_top_movies_with_crew():
+
     df = get_top_movies()
     df = get_crew(df, "top movies")
     return df
+
+
+
+
+
+def process_username(data):
+    try:
+        username = data
+        feed = feedparser.parse(f"https://letterboxd.com/{username}/rss/")
+        movieDict = {
+            "entry_title" : [],
+            "entry_published" : [],
+            "entry_rating" : [],
+            "movie_id": [],
+            "tv_id" : [],
+        }
+        feed.entries[0].tmdb_movieid
+        for entry in feed.entries:
+            
+            movieDict["entry_title"].append(entry.letterboxd_filmtitle)
+            movieDict["entry_published"].append(entry.published)
+            try:
+                movieDict["movie_id"].append(entry.tmdb_movieid)
+                movieDict["tv_id"].append(pd.NA)
+            except:
+                movieDict["movie_id"].append(pd.NA)
+                movieDict["tv_id"].append(entry.tmdb_tvid)
+            try:
+                movieDict["entry_rating"].append(entry.letterboxd_memberrating)
+
+            except:
+                movieDict["entry_rating"].append(0)
+
+
+        df = pd.DataFrame.from_dict(movieDict, orient='columns')
+
+        df['movie_id'] = pd.to_numeric(df['movie_id'])
+        df['tv_id'] = pd.to_numeric(df['tv_id'])
+        df['entry_rating'] = pd.to_numeric(df['entry_rating']) 
+        return df
+    except Exception as e:
+        raise RuntimeError("username upload error")
+
+
+def process_file(filepath):
+    try:
+        df = pd.read_csv(filepath)
+        df = df.rename(columns={"Name" : "entry_title"})
+        rows = [row for _, row in df.iterrows()]
+        print("searching for uploaded movies")
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            id_results = list(executor.map(search_tmdb, rows))
+        movie_ids, tv_ids = zip(*id_results)
+        df["movie_id"] = movie_ids
+        df["tv_id"] = tv_ids
+        df["movie_id"] = pd.to_numeric(df["movie_id"])
+        df["tv_id"] = pd.to_numeric(df["tv_id"])
+        return df
+    except Exception as e:
+        raise RuntimeError("csv upload error")

@@ -20,23 +20,32 @@ def create_app():
     
     @app.route("/")
     def home():
-       return render_template("Index.html")
+        error = request.args.get('error', False)
+        return render_template("Index.html", error=error)
 
     @app.route('/recommend', methods=['POST'])
     def recommend():
-        if 'file' in request.files:
-            file = request.files['file']
-            if file and allowed_file(file.filename):
-                filename = secure_filename(file.filename)
-                filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-                file.save(filepath)
-                user_data = process_file(filepath)
-        elif 'username' in request.form and request.form["username"] != "":
-            username = request.form["username"]
-            user_data = process_username(username)
-        
-        results = run_recommender(user_data)
+        try:
+            if 'file' in request.files:
+                file = request.files['file']
+                if file and allowed_file(file.filename):
+                    filename = secure_filename(file.filename)
+                    filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+                    file.save(filepath)
+                    user_data = process_file(filepath)
+            elif 'username' in request.form and request.form["username"] != "":
+                username = request.form["username"]
+                user_data = process_username(username)
 
-        return render_template('results.html', table=results.to_html(classes='data'))
+            results = run_recommender(user_data)
+            return render_template('results.html', table=results.to_html(classes='data'))
+        except Exception as e:
+            print(e)
+            if(str(e) == "username upload error"):
+                return redirect(url_for('home', error=1))
+            else:
+                return redirect(url_for('home', error=2))
+
+        
     
     return app

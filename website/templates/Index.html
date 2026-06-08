@@ -85,7 +85,7 @@
     }
     .upload-area:hover {
       border-color: #a96ec9;
-      background: rgba(201,169,110,0.04);
+      background: rgba(181, 110, 201, 0.04);
     }
     .upload-area input[type="file"] {
       position: absolute;
@@ -125,20 +125,6 @@
     @keyframes fadeUp {
       from { opacity: 0; transform: translateY(24px); }
       to   { opacity: 1; transform: translateY(0); }
-    }
-
-    /* Film strip decoration */
-    .film-strip {
-      display: flex;
-      gap: 6px;
-      justify-content: center;
-      margin-bottom: 2rem;
-      opacity: 0.2;
-    }
-    .film-hole {
-      width: 10px; height: 10px;
-      border-radius: 2px;
-      border: 1px solid #c96ec7;
     }
   </style>
 </head>
@@ -186,6 +172,11 @@
                   placeholder="enter username here"
                   autocomplete="off"
                 />
+                <!-- username error message container -->
+                <p id="username-error" aria-live="polite" style="color:#db1010; display:{% if error == '1' %}block{% else %}none{% endif %}; margin-top:0.5rem; font-size:0.85rem;">
+                  Please enter a valid Letterboxd username.
+                </p>
+
               </div>
               <button class="submit-btn" type="submit">Get Recommendations →</button>
             </form>
@@ -207,6 +198,11 @@
                   </div>
                 </div>
               </div>
+
+              <!-- file error message container -->
+              <p id="upload-error" aria-live="polite" style="color:#db1010; display:{% if error == '2' %}block{% else %}none{% endif %}; margin-top:0.5rem; font-size:0.85rem;">
+                Please enter a valid Letterboxd ratings.csv file.
+              </p>
               <button class="submit-btn" type="submit">Get Recommendations →</button>
             </form>
           </div>
@@ -236,10 +232,33 @@
       }
     }
 
+    const urlParams = new URLSearchParams(window.location.search);
+    if (urlParams.get('error') === '2') {
+      switchTab('upload', document.querySelector('.tab:nth-child(2)'));
+    }
+
     document.querySelectorAll('form').forEach(form => {
-        form.addEventListener('submit', () => {
-            document.querySelector('.submit-btn').textContent = 'Finding your films...';
-            document.querySelector('.submit-btn').disabled = true;
+          form.addEventListener('submit', () => {
+            // Client-side validation for username tab
+            const usernameInput = form.querySelector('input[name="username"]');
+            const errorEl = document.getElementById('username-error');
+            if (usernameInput !== null) {
+              if (usernameInput.value.trim() === '') {
+                e.preventDefault();
+                errorEl.style.display = 'block';
+                return;
+              } else {
+                errorEl.style.display = 'none';
+              }
+            }
+            
+            const uploadInput = form.querySelector('input[name="upload"]');
+            const uploadError = document.getElementById('upload-error');
+            uploadError.style.display = 'none';
+
+          const btn = form.querySelector('.submit-btn'); // ← scoped to this form
+          btn.textContent = 'Finding your films...';
+          btn.disabled = true;
         });
     });
   </script>
